@@ -1,0 +1,250 @@
+---
+title: "Exploratory Data Analysis of Credit Risk Dataset"
+author: "Aleksei Prishchepo"
+date: "2025-09-15"
+fig-format: svg
+number-sections: true
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    theme: cosmo
+    code-fold: true
+    code-summary: "Click to show/hide code"
+    highlight-style: tango
+
+    
+  # pdf:
+  #   papersize: letter
+  #   margin-left: 1.5cm
+  #   margin-right: 1.5cm
+  #   margin-top: 1.5cm
+  #   margin-bottom: 2.5cm
+  #   colorlinks: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(dpi = 300, fig.width = 8)
+library(tidyverse)
+library(janitor)
+library(skimr)
+library(GGally)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(tidyr)
+```
+
+## Load Data
+
+```{r load_data}
+data <- readxl::read_excel("Credit_Risk_Dataset_Onyx_Data_September_25.xlsx")
+```
+
+## Basic Descriptives
+
+```{r skim_data}
+data |> skim()
+```
+
+```{r glimpse_data}
+data |> glimpse()
+```
+
+Using latitude and longitude variables for predictions doesn't make much
+sense, so we should remove them, along with `client_ID`, which serves
+only as an identifier.
+
+```{r}
+data <- data |>
+  select(-city_latitude, -city_longitude, -client_ID)
+```
+
+## Univariate Distributions
+
+
+```{r }
+#| fig-height: 6
+#| fig-width: 6
+# Numeric distributions
+data |>
+  select(where(is.numeric)) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = value)) +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") + 
+  theme(axis.title = element_blank())
+```
+
+## Correlations
+
+```{r fig-corrplot}
+library(corrplot)
+
+cor_data <- data |>
+  select_if(is.numeric) |>
+  cor(use = "pairwise.complete.obs")
+
+cor_data |>
+  corrplot(
+    type = "upper", order = "hclust",
+    tl.col = "black", tl.srt = 45
+  )
+```
+
+There are three pairs of highly correlated variables. Let's check them
+and drop redundant ones.
+
+```{r}
+cor(data$loan_percent_income, data$loan_to_income_ratio, use = "pairwise.complete.obs")
+```
+
+```{r}
+cor(data$person_age, data$cb_person_cred_hist_length, use = "pairwise.complete.obs")
+```
+
+```{r}
+cor(data$person_income, data$other_debt, use = "pairwise.complete.obs")
+```
+
+Obviously, `loan_percent_income` is in fact `loan_to_income_ratio`, so
+let's drop it. Other two correlations are not perfect, so we keep them.
+
+```{r}
+data <- data |>
+  select(-loan_percent_income)
+```
+
+## Missing Values
+
+```{r fig-missing-upset}
+#| fig-height: 3
+#| fig-width: 4
+library(naniar)
+
+data |>
+  select(person_emp_length, loan_int_rate) |>
+  gg_miss_upset(
+    sets.bar.color = "#56B4E9", point.size = 3,
+    main.bar.color = "grey39", matrix.color = "grey39"
+  )
+```
+
+There is no obvious pattern in missingness. We're going to impute missing values using median.
+
+```{r impute_missing}
+data <- data |>
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+```
+
+## Outliers
+
+```{r fig-outliers}
+# | fig-height: 6
+# | fig-width: 6
+
+data |>
+  select(where(is.numeric)) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = name, y = log(value))) +
+  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+There are outliers in `person_age` and `person_emp_length` that seem to be data errors. There are also extreme values in `other_debt` and `person_income`. We'll zoom in to see them better.
+
+
+```{r fig-outliers-zoom}
+require(gridExtra)
+library(scales)
+
+plot1 <- data |>
+  select(where(is.numeric)) |>
+  select(person_age, person_emp_length) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = name, y = value)) +
+  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot2 <-  data |>
+  select(where(is.numeric)) |>
+  select(other_debt, person_income) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = name, y = log10(value))) +
+  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
+  scale_y_continuous(labels = trans_format(function(x) round(10^x, -1), label_number_auto())) +
+  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+
+grid.arrange(plot1, plot2, ncol=2)
+
+```
+Let's correct `person_age` and `person_emp_length` by replacing outliers with median. Other utliers seem to be valid values. We're not going to remove them.
+
+```{r correct_outliers}
+data <- data |>
+  mutate(
+    person_age = ifelse(person_age > 100,
+      median(person_age, na.rm = TRUE),
+      person_age
+    ),
+    person_emp_length = ifelse(person_emp_length > 70,
+      median(person_emp_length, na.rm = TRUE),
+      person_emp_length
+    )
+  )
+```
+
+## Selecting Predictors
+
+We're going to build a logistic regression fit to predict loan default
+(`loan_status` variable). 0 means no default, 1 means default.
+
+Let's convert categorical variables to factors.
+
+```{r convert_factors}
+data <- data |>
+  mutate(across(where(is.character), as.factor))
+```
+
+```{r linear-fit}
+data <- data |> mutate(loan_status = (loan_status == 1))
+
+data1 <- data |> select(-city, -state)
+
+fit <- glm(loan_status ~ ., family = binomial(link = "logit"), x = TRUE, data = data1)
+summary(fit)
+```
+## Moidel Diagnostics
+
+```{r}
+anova(fit, test="Chisq")
+```
+
+```{r}
+library(performance)
+r2(fit)
+```
+
+Check for overdispersion:
+
+```{r}
+dispersion <- summary(fit)$deviance / summary(fit)$df.residual
+dispersion
+```
+Dispersion is less than  1, so no overdispersion.
+
+## Marginal Effects
+
+
+```{r}
+library(erer)
+
+ma <- maBina(fit)$out
+
+ma <- ma |>
+  rownames_to_column("variable")
+ma
+```
