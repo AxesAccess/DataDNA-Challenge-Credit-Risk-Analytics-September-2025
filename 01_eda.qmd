@@ -439,3 +439,10 @@ cv_sig
 Both the full model and the model using only significant variables show
 very similar results. We'll use the model with selected variables as it
 is more interpretable.
+
+## Save Processed Data
+
+```{r save-data, eval=FALSE}
+write_csv(data_selected, "credit_risk_interim.csv")
+saveRDS(fit_selected, "credit_risk_model.rds")
+```
