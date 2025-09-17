@@ -1,0 +1,209 @@
+---
+title: "Modelling"
+author: "Aleksei Prishchepo"
+date: "2025-09-17"
+fig-format: svg
+number-sections: true
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    highlight-style: tango
+
+  # pdf:
+  #   papersize: letter
+  #   margin-left: 1.5cm
+  #   margin-right: 1.5cm
+  #   margin-top: 1.5cm
+  #   margin-bottom: 2.5cm
+  #   colorlinks: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6)
+
+library(tidyverse)
+library(caret)
+library(pROC)
+library(PRROC)
+library(randomForest)
+library(xgboost)
+library(vip)       # for variable importance plots
+library(janitor)
+
+```
+
+
+Let's load saved data.
+
+```{r load-data}
+
+dataset <- read_csv("credit_risk_interim.csv")
+
+dataset <- dataset |> 
+  mutate(across(where(is.character), as.factor))
+glimpse(dataset)
+```
+
+```{r preprocess-data}
+# Train-test split
+set.seed(123)
+train_index <- createDataPartition(dataset$loan_status, p = 0.7, list = FALSE)
+train <- dataset[train_index, ]
+test  <- dataset[-train_index, ]
+```
+
+## Logistic Regression
+
+We're going to use selected at the previous step variables.
+
+
+```{r logistic-regression}
+glm_model <- glm(loan_status ~ .,
+  family = "binomial", data = train
+)
+summary(glm_model)
+```
+
+```{r glm-evaluation}
+
+glm_probs <- predict(glm_model, newdata = test, type = "response")
+
+glm_pred <- ifelse(glm_probs > 0.5, "Yes", "No") |>
+  factor(levels = c("No","Yes"))
+
+# Confusion matrix
+confusionMatrix(glm_pred, test$loan_status)
+
+```
+
+```{r glm-roc-curve}
+
+# ROC curve
+roc_glm <- roc(response = test$loan_status, predictor = glm_probs, levels = c("No","Yes"))
+plot(roc_glm, col = "blue", main = "ROC Curve - Logistic Regression")
+auc(roc_glm)
+
+```
+## Random Forest
+
+```{r random-forest}
+set.seed(123)
+rf_model <- randomForest(
+  loan_status ~ .,
+  data = train, ntree = 500, mtry = 4, importance = TRUE
+)
+
+# Predictions
+rf_probs <- predict(rf_model, newdata = test, type = "prob")[, 2]
+rf_pred <- predict(rf_model, newdata = test)
+```
+
+# Confusion matrix
+
+```{r rf-evaluation}
+confusionMatrix(rf_pred, test$loan_status)
+```
+# ROC curve
+
+```{r rf-roc-curve}
+roc_rf <- roc(test$loan_status, rf_probs, levels = c("No", "Yes"))
+plot(roc_glm, col = "blue")
+plot(roc_rf, col = "darkgreen", add = TRUE)
+legend("bottomright", legend = c("Logistic Regression", "Random Forest"),
+       col = c("blue", "darkgreen"), lwd = 2)
+auc(roc_rf)
+```
+
+### Variable importance
+
+```{r rf-variable-importance}
+varImpPlot(rf_model)
+```
+
+## XGBoost
+
+```{r xgboost}
+# Prepare data
+x_train <- train |>
+  mutate(loan_status = ifelse(loan_status == "Yes", 1, 0))
+
+x_test <- test |>
+  mutate(loan_status = ifelse(loan_status == "Yes", 1, 0))
+
+x_test <- cbind(x_test, model.matrix(~ person_home_ownership - 1, data = x_test))
+x_test <- cbind(x_test, model.matrix(~ loan_intent - 1, data = x_test))
+x_test <- cbind(x_test, model.matrix(~loan_grade - 1, data = x_test))
+x_test <- x_test |> select(-person_home_ownership, -loan_intent, -loan_grade)
+
+x_train <- cbind(x_train, model.matrix(~person_home_ownership - 1, data = x_train))
+x_train <- cbind(x_train, model.matrix(~loan_intent - 1, data = x_train))
+x_train <- cbind(x_train, model.matrix(~loan_grade - 1, data = x_train))
+x_train <- x_train |> select(-person_home_ownership, -loan_intent, -loan_grade)
+
+dtrain <- xgb.DMatrix(
+  data = as.matrix(select(x_train, -loan_status)),
+  label = x_train$loan_status
+)
+dtest <- xgb.DMatrix(
+  data = as.matrix(select(x_test, -loan_status)),
+  label = x_test$loan_status
+)
+# Train
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "auc"
+)
+
+xgb_model <- xgb.train(
+  params = params, data = dtrain, nrounds = 200,
+  watchlist = list(train = dtrain, test = dtest),
+  verbose = 0
+)
+
+# Predictions
+xgb_probs <- predict(xgb_model, dtest)
+roc_xgb <- roc(x_test$loan_status, xgb_probs)
+
+
+plot(roc_glm, col = "blue")
+plot(roc_rf, col = "darkgreen", add = TRUE)
+plot(roc_xgb, col = "red", add = TRUE)
+legend("bottomright",
+  legend = c("Logistic Regression", "Random Forest", "XGBoost"),
+  col = c("blue", "darkgreen", "red"), lwd = 2
+)
+auc(roc_xgb)
+
+# Feature importance
+vip(xgb_model, num_features = 15)
+```
+
+### Precision-Recall Curves
+
+```{r fig-precision-recall-glm}
+# Logistic regression PR curve
+pr_glm <- pr.curve(
+  scores.class0 = glm_probs[test$loan_status == "Yes"],
+  scores.class1 = glm_probs[test$loan_status == "No"], curve = TRUE
+)
+plot(pr_glm, main = "Precision-Recall Curve (GLM)")
+```
+
+```{r fig-precision-recall-rf}
+# Random forest PR curve
+pr_rf <- pr.curve(
+  scores.class0 = rf_probs[test$loan_status == "Yes"],
+  scores.class1 = rf_probs[test$loan_status == "No"], curve = TRUE
+)
+plot(pr_rf, main = "Precision-Recall Curve (RF)")
+```
+
+```{r fig-precision-recall-compare}
+pr_xgb <- pr.curve(
+  scores.class0 = xgb_probs[x_test$loan_status == 1],
+  scores.class1 = xgb_probs[x_test$loan_status == 0], curve = TRUE
+)
+plot(pr_xgb, main = "Precision-Recall Curve (XGBoost)")
+```
