@@ -1,0 +1,163 @@
+---
+title: "Synthetic Data For Simulations"
+format: html
+---
+
+
+```{r load-data}
+dataset <- readxl::read_excel("Credit_Risk_Dataset_Onyx_Data_September_25.xlsx")
+
+# Calculate proportions of categorical variables
+library(dplyr)
+
+data <- dataset |>
+  select(person_home_ownership, loan_intent) |>
+  mutate(across(everything(), as.factor))
+
+prop_home_ownership <- prop.table(table(data$person_home_ownership))
+prop_loan_intent <- prop.table(table(data$loan_intent))
+
+print(prop_home_ownership)
+print(prop_loan_intent)
+
+
+```
+
+```{r create-model}
+
+encoded_dataset <- read.csv("encoded_dataset.csv")
+
+library(tidyverse)
+library(xgboost)
+
+# Prepare data
+x_train <- encoded_dataset |>
+  filter(is_train == 1) |>
+  select(-is_train, -client_ID)
+x_test <- encoded_dataset |>
+  filter(is_train == 0) |>
+  select(-is_train, -client_ID)
+
+dtrain <- xgb.DMatrix(
+  data = as.matrix(select(x_train, -loan_status)),
+  label = x_train$loan_status
+)
+
+dtest <- xgb.DMatrix(
+  data = as.matrix(select(x_test, -loan_status)),
+  label = x_test$loan_status
+)
+
+# Train
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "auc"
+)
+
+xgb_model <- xgb.train(
+  params = params, data = dtrain, nrounds = 200,
+  watchlist = list(train = dtrain, test = dtest),
+  verbose = 0
+)
+
+```
+
+
+```{r generate-synthetic}
+
+# Parameters
+N_synth <- 50000
+
+
+# Sampling function
+sample_by_purpose <- function(dataset, N, prop_weights) {
+  purposes <- names(prop_weights)
+  counts <- round(N * prop_weights |> unname() / sum(prop_weights))
+  sampled <- map2_dfr(purposes, counts, function(p, cnt) {
+    base <- dataset |> filter(loan_intent == p)
+    if (nrow(base) == 0) {
+      return(tibble())
+    }
+    base |> sample_n(size = cnt, replace = TRUE)
+  })
+  sampled
+}
+
+# Generate synthetic borrowers
+synth <- sample_by_purpose(dataset, N_synth, prop_loan_intent)
+
+# Add jitter to numeric features
+numeric_cols <- c(
+  "person_age", "person_income",
+  "person_emp_length", "loan_amnt", "loan_to_income_ratio"
+)
+factor_cols <- c("loan_intent", "person_home_ownership")
+
+synth <- synth |>
+  mutate(across(all_of(numeric_cols), ~ .x * exp(rnorm(n(), 0, 0.05))))
+
+# Assign home ownership randomly according to weights
+synth$person_home_ownership <- sample(names(prop_home_ownership),
+  nrow(synth),
+  replace = TRUE, prob = prop_home_ownership
+)
+
+# Separate categorical and numeric features
+
+train <- synth |> select(all_of(c(numeric_cols, factor_cols)))
+train <- train |> mutate(across(where(is.character), as.factor))
+
+# Encode factors
+encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = train) |> as.data.frame()
+encoded_home_ownership <- model.matrix(~ person_home_ownership - 1, data = train) |> as.data.frame()
+
+train <- cbind(train, encoded_loan_intent, encoded_home_ownership)
+train <- train |> select(-all_of(factor_cols))
+
+dmat <- xgb.DMatrix(
+  data = as.matrix(train)
+)
+
+# Predict PD
+synth$Predicted_PD <- predict(xgb_model, dmat)
+
+# Add bins for slicers
+synth <- synth |>
+  mutate(
+    age_bin = cut(person_age,
+      breaks = c(20, 25, 30, 35, 40, 45, 100),
+      labels = c("20-24", "25-29", "30-34", "35-39", "40-44", "45+"),
+      include.lowest = TRUE
+    ),
+    income_bin = cut(person_income,
+      breaks = c(0, 25000, 50000, 75000, 100000, 1e6),
+      labels = c("0-25k", "25-50k", "50-75k", "75-100k", "100k+"),
+      include.lowest = TRUE
+    ),
+    loan_amount_bin = cut(loan_amnt,
+      breaks = c(0, 5000, 10000, 20000, 40000, 1e6),
+      labels = c("0-5k", "5-10k", "10-20k", "20-40k", "40k+"),
+      include.lowest = TRUE
+    ),
+    lti_bin = cut(loan_to_income_ratio,
+      breaks = c(0, 0.1, 0.2, 0.3, 1),
+      labels = c("0-0.1", "0.1-0.2", "0.2-0.3", "0.3+"),
+      include.lowest = TRUE
+    )
+  )
+
+# Output for Power BI
+output <- synth |>
+  mutate(Borrower_ID = row_number()) |>
+  select(
+    Borrower_ID, loan_intent, person_home_ownership,
+    age_bin, income_bin, loan_amount_bin, lti_bin,
+    person_age, person_income, person_emp_length,
+    loan_amnt, loan_to_income_ratio,
+    Predicted_PD
+  )
+
+output |> glimpse()
+
+```
+
