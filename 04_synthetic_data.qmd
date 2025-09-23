@@ -5,38 +5,53 @@ format: html
 
 
 ```{r load-data}
-dataset <- readxl::read_excel("Credit_Risk_Dataset_Onyx_Data_September_25.xlsx")
+dataset <- read.csv("prepared_dataset.csv")
 
-# Calculate proportions of categorical variables
 library(dplyr)
-
-data <- dataset |>
-  select(person_home_ownership, loan_intent) |>
-  mutate(across(everything(), as.factor))
-
-prop_home_ownership <- prop.table(table(data$person_home_ownership))
-prop_loan_intent <- prop.table(table(data$loan_intent))
-
-print(prop_home_ownership)
-print(prop_loan_intent)
-
-
-```
-
-```{r create-model}
-
-encoded_dataset <- read.csv("encoded_dataset.csv")
-
+library(caret)
 library(tidyverse)
 library(xgboost)
 
+
+numeric_cols <- c(
+  "person_age", "person_income",
+  "person_emp_length", "loan_amnt", "loan_to_income_ratio"
+)
+factor_cols <- c("loan_intent", "person_home_ownership")
+
+# Calculate proportions of categorical variables
+dataset <- dataset |>
+  mutate(across(all_of(factor_cols), as.factor))
+
+prop_home_ownership <- prop.table(table(dataset$person_home_ownership))
+prop_loan_intent <- prop.table(table(dataset$loan_intent))
+
+
+# Select columns
+encoded_dataset <- dataset |> select(c(loan_status, is_train, all_of(numeric_cols), all_of(factor_cols)))# Save factor levels to 
+
+# Save levels to ensure consistency later
+loan_intent_levels <- levels(dataset$loan_intent)
+home_ownership_levels <- levels(dataset$person_home_ownership)
+
+# Encode factors
+encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = dataset) |> as.data.frame()
+encoded_home_ownership <- model.matrix(~ person_home_ownership - 1, data = dataset) |> as.data.frame()
+
+encoded_dataset <- cbind(encoded_dataset, encoded_loan_intent, encoded_home_ownership)
+encoded_dataset <- encoded_dataset |> select(-all_of(factor_cols))
+
+# Correct column names
+colnames(encoded_dataset) <- make.names(colnames(encoded_dataset))
+
 # Prepare data
+
 x_train <- encoded_dataset |>
   filter(is_train == 1) |>
-  select(-is_train, -client_ID)
+  select(-is_train)
 x_test <- encoded_dataset |>
   filter(is_train == 0) |>
-  select(-is_train, -client_ID)
+  select(-is_train)
 
 dtrain <- xgb.DMatrix(
   data = as.matrix(select(x_train, -loan_status)),
@@ -60,14 +75,11 @@ xgb_model <- xgb.train(
   verbose = 0
 )
 
-```
 
-
-```{r generate-synthetic}
+# Generate synthetic data
 
 # Parameters
 N_synth <- 50000
-
 
 # Sampling function
 sample_by_purpose <- function(dataset, N, prop_weights) {
@@ -87,12 +99,6 @@ sample_by_purpose <- function(dataset, N, prop_weights) {
 synth <- sample_by_purpose(dataset, N_synth, prop_loan_intent)
 
 # Add jitter to numeric features
-numeric_cols <- c(
-  "person_age", "person_income",
-  "person_emp_length", "loan_amnt", "loan_to_income_ratio"
-)
-factor_cols <- c("loan_intent", "person_home_ownership")
-
 synth <- synth |>
   mutate(across(all_of(numeric_cols), ~ .x * exp(rnorm(n(), 0, 0.05))))
 
@@ -103,9 +109,14 @@ synth$person_home_ownership <- sample(names(prop_home_ownership),
 )
 
 # Separate categorical and numeric features
-
 train <- synth |> select(all_of(c(numeric_cols, factor_cols)))
-train <- train |> mutate(across(where(is.character), as.factor))
+
+# Convert to factors
+train <- train |> mutate(across(where(is.character), as.factor)) |> data.frame()
+
+# Ensure factor levels match training data
+train$loan_intent <- factor(train$loan_intent, levels = loan_intent_levels)
+train$person_home_ownership <- factor(train$person_home_ownership, levels = home_ownership_levels)
 
 # Encode factors
 encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = train) |> as.data.frame()
@@ -130,12 +141,12 @@ synth <- synth |>
       include.lowest = TRUE
     ),
     income_bin = cut(person_income,
-      breaks = c(0, 25000, 50000, 75000, 100000, 1e6),
+      breaks = c(0, 25000, 50000, 75000, 100000, 1e7),
       labels = c("0-25k", "25-50k", "50-75k", "75-100k", "100k+"),
       include.lowest = TRUE
     ),
     loan_amount_bin = cut(loan_amnt,
-      breaks = c(0, 5000, 10000, 20000, 40000, 1e6),
+      breaks = c(0, 5000, 10000, 20000, 40000, 1e7),
       labels = c("0-5k", "5-10k", "10-20k", "20-40k", "40k+"),
       include.lowest = TRUE
     ),
@@ -146,7 +157,6 @@ synth <- synth |>
     )
   )
 
-# Output for Power BI
 output <- synth |>
   mutate(Borrower_ID = row_number()) |>
   select(
