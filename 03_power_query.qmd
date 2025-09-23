@@ -115,6 +115,8 @@ readr::write_csv(output, "encoded_dataset.csv")
 
 ## Marginal Effects from GLM
 
+
+
 ```{r glm-model}
 
 # Delete the next line before copying to Power Query
@@ -138,7 +140,6 @@ factor_columns <- c(
 train <- train |> mutate(across(where(is.character), as.factor)) |> data.frame()
 
 # First, train without standardizing
-
 glm_model <- glm(loan_status ~ .,
   family = "binomial", data = train
 )
@@ -168,6 +169,8 @@ names(AME) <- names(betas)
 raw_effects <- data.frame(effect_raw = AME, coef = betas) |>
   tibble::rownames_to_column(var = "Variable")
 
+
+# Now standardize continuous variables and retrain
 train <- train |> mutate(across(
   .cols = c(continuous_variables),
   .fns = ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE)
@@ -178,6 +181,7 @@ glm_model <- glm(loan_status ~ .,
 )
 
 p_hat <- predict(glm_model, type = "response")
+
 # Extract coefficients
 betas <- coef(glm_model)
 
@@ -204,9 +208,10 @@ output <- data.frame(effect_std = AME) |>
 
 output <- output |> left_join(raw_effects, by = "Variable")
 
+# Separate factor and continuous variables
+
 reg_templ <- paste(factor_columns, collapse = "|")
 
-# Separate factor and continuous variables
 output <- output |> 
   mutate(Variable = gsub("[\\(\\)]", "", Variable))
 output <- output |> mutate(Factor = gsub(reg_templ, "", Variable))
@@ -214,23 +219,6 @@ output <- output |> mutate(Factor = stringr::str_replace(Factor, Variable, ""))
 
 output <- output |> 
   mutate(Variable = gsub(paste0("(", reg_templ, ").+"), "\\1", Variable))
-
-# Calculate relative effects in groups
-
-output <- output |>
-  mutate(group = ifelse(Variable %in% continuous_variables, "continuous", Variable))
-
-output <- output |>
-  group_by(group) |>
-  mutate(
-    factor_mean = mean(effect_std),
-    effect_factor_z_score = ((effect_std - factor_mean) / sd(effect_std))
-  ) |>
-  ungroup() |>
-  select(-c(factor_mean, group))
-
-output <- output |>
-  mutate(effect_z_score = ((effect_std - mean(effect_std)) / sd(effect_std)))
 
 output
 ```
