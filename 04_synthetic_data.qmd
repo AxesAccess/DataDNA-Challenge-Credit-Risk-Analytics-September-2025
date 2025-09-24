@@ -6,18 +6,29 @@ format: html
 
 ```{r load-data}
 dataset <- read.csv("prepared_dataset.csv")
+```
+
+
+```{r synth-data}
 
 library(dplyr)
 library(caret)
 library(tidyverse)
+library(stringr)
 library(xgboost)
 
 
 numeric_cols <- c(
-  "person_age", "person_income",
-  "person_emp_length", "loan_amnt", "loan_to_income_ratio"
+  "person_age", "person_income", "person_emp_length", "loan_amnt", 
+  "loan_to_income_ratio", "loan_int_rate", "credit_utilization_ratio"
 )
 factor_cols <- c("loan_intent", "person_home_ownership")
+
+selected_variables <- c(
+  "loan_status", "person_age", "person_income", "person_emp_length", "loan_amnt",
+  "loan_to_income_ratio", "person_home_ownership", "loan_intent"
+)
+
 
 # Calculate proportions of categorical variables
 dataset <- dataset |>
@@ -26,13 +37,12 @@ dataset <- dataset |>
 prop_home_ownership <- prop.table(table(dataset$person_home_ownership))
 prop_loan_intent <- prop.table(table(dataset$loan_intent))
 
-
-# Select columns
-encoded_dataset <- dataset |> select(c(loan_status, is_train, all_of(numeric_cols), all_of(factor_cols)))# Save factor levels to 
-
 # Save levels to ensure consistency later
 loan_intent_levels <- levels(dataset$loan_intent)
 home_ownership_levels <- levels(dataset$person_home_ownership)
+
+# Select columns
+encoded_dataset <- dataset |> select(all_of(c("is_train", selected_variables)))
 
 # Encode factors
 encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = dataset) |> as.data.frame()
@@ -101,6 +111,16 @@ synth <- sample_by_purpose(dataset, N_synth, prop_loan_intent)
 # Add jitter to numeric features
 synth <- synth |>
   mutate(across(all_of(numeric_cols), ~ .x * exp(rnorm(n(), 0, 0.05))))
+# Round where appropriate
+synth$person_age <- round(synth$person_age)
+synth$person_emp_length <- round(synth$person_emp_length)
+synth$loan_amnt <- round(synth$loan_amnt / 100) * 100
+synth$loan_int_rate <- round(synth$loan_int_rate, 2)
+synth$person_income <- round(synth$person_income / 100) * 100
+synth$credit_utilization_ratio <- round(synth$credit_utilization_ratio, 2)
+
+
+synth$loan_to_income_ratio <- synth$loan_amnt / synth$person_income
 
 # Assign home ownership randomly according to weights
 synth$person_home_ownership <- sample(names(prop_home_ownership),
@@ -108,25 +128,25 @@ synth$person_home_ownership <- sample(names(prop_home_ownership),
   replace = TRUE, prob = prop_home_ownership
 )
 
-# Separate categorical and numeric features
-train <- synth |> select(all_of(c(numeric_cols, factor_cols)))
+# Select variables
+x_final <- synth |> select(all_of(selected_variables)) |> select(-loan_status)
 
 # Convert to factors
-train <- train |> mutate(across(where(is.character), as.factor)) |> data.frame()
+x_final <- x_final |> mutate(across(where(is.character), as.factor)) |> data.frame()
 
 # Ensure factor levels match training data
-train$loan_intent <- factor(train$loan_intent, levels = loan_intent_levels)
-train$person_home_ownership <- factor(train$person_home_ownership, levels = home_ownership_levels)
+x_final$loan_intent <- factor(x_final$loan_intent, levels = loan_intent_levels)
+x_final$person_home_ownership <- factor(x_final$person_home_ownership, levels = home_ownership_levels)
 
 # Encode factors
-encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = train) |> as.data.frame()
-encoded_home_ownership <- model.matrix(~ person_home_ownership - 1, data = train) |> as.data.frame()
+encoded_loan_intent <- model.matrix(~ loan_intent - 1, data = x_final) |> as.data.frame()
+encoded_home_ownership <- model.matrix(~ person_home_ownership - 1, data = x_final) |> as.data.frame()
 
-train <- cbind(train, encoded_loan_intent, encoded_home_ownership)
-train <- train |> select(-all_of(factor_cols))
+x_final <- cbind(x_final, encoded_loan_intent, encoded_home_ownership)
+x_final <- x_final |> select(-all_of(factor_cols))
 
 dmat <- xgb.DMatrix(
-  data = as.matrix(train)
+  data = as.matrix(x_final)
 )
 
 # Predict PD
@@ -158,16 +178,20 @@ synth <- synth |>
   )
 
 output <- synth |>
-  mutate(Borrower_ID = row_number()) |>
-  select(
-    Borrower_ID, loan_intent, person_home_ownership,
-    age_bin, income_bin, loan_amount_bin, lti_bin,
-    person_age, person_income, person_emp_length,
-    loan_amnt, loan_to_income_ratio,
-    Predicted_PD
-  )
+  mutate(client_ID = paste0("FAKE_", str_pad(row_number(), 5, pad = "0")))
 
-output |> glimpse()
+# Cross-validation
+
+xgb_pred <- predict(xgb_model, newdata = dtest)
+xgb_pred <- ifelse(xgb_pred > 0.5, 1, 0) |> as.factor()
+
+conf_matrix <- confusionMatrix(xgb_pred, x_test$loan_status |> as.factor())
+
+xgb_parameters <- data.frame(Value = conf_matrix$byClass) |>
+  tibble::rownames_to_column(var = "Parameter")
+
+glimpse(output)
+glimpse(parameters)
 
 ```
 
