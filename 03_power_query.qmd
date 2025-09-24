@@ -21,8 +21,9 @@ library(caret)
 # Select relevant columns
 
 selected_variables <- c(
-  "client_ID", "loan_status", "person_age", "person_income", "person_home_ownership",
-  "person_emp_length", "loan_intent",  "loan_amnt", "loan_to_income_ratio"
+  "client_ID", "loan_status", "person_age", "person_income", 
+  "person_home_ownership", "person_emp_length", "loan_intent",  "loan_amnt",
+  "loan_to_income_ratio", "loan_int_rate", "credit_utilization_ratio"
 )
 
 # excluding "loan_grade" because it is not independent
@@ -115,19 +116,16 @@ readr::write_csv(output, "encoded_dataset.csv")
 
 ## Marginal Effects from GLM
 
+```{r load-dataset}
+# Delete the next line before copying to Power Query
+dataset <- read.csv("prepared_dataset.csv")
+```
 
 
 ```{r glm-model}
 
-# Delete the next line before copying to Power Query
-dataset <- read.csv("prepared_dataset.csv")
-
 library(dplyr)
 library(caret)
-
-train <- dataset |> select(-c(client_ID, is_train)) 
-
-# standardize numeric variables
 
 continuous_variables <- c(
   "person_age", "person_income", "person_emp_length", "loan_amnt",
@@ -136,6 +134,8 @@ continuous_variables <- c(
 factor_columns <- c(
   "person_home_ownership", "loan_intent"
 )
+
+train <- dataset |> select(c("loan_status", all_of(continuous_variables), all_of(factor_columns)))
 
 train <- train |> mutate(across(where(is.character), as.factor)) |> data.frame()
 
@@ -245,13 +245,19 @@ dataset <- dataset |>
     loan_status = as.factor(loan_status)
   )
 
+selected_variables <- c(
+  "loan_status", "person_age", "person_income", "person_emp_length", "loan_amnt",
+  "loan_to_income_ratio", "person_home_ownership", "loan_intent"
+)
+
 train <- dataset |>
   filter(is_train == 1) |>
-  select(-c(client_ID, is_train))
+  select(all_of(selected_variables))
 
 test <- dataset |>
   filter(is_train == 0) |>
-  select(-c(client_ID, is_train))
+  select(all_of(selected_variables)) 
+
 glm_model <- glm(loan_status ~ .,
   family = "binomial", data = train
 )
