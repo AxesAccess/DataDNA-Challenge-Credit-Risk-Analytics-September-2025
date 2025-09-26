@@ -1,7 +1,18 @@
 ---
 title: "Scripts for Power Query"
-format: html
+author: "Aleksei Prishchepo"
+date: "2025-09-20"
+fig-format: svg
+number-sections: true
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    highlight-style: tango
 ---
+
+In this document, we will create R scripts that can be used in Power Query within Power BI. The scripts will cover data preparation, encoding categorical variables, and building a logistic regression model with marginal effects and cross-validation.
 
 ## Load data
 
@@ -18,15 +29,15 @@ dataset <- readxl::read_excel("Credit_Risk_Dataset_Onyx_Data_September_25.xlsx")
 library(dplyr)
 library(caret)
 
-# Select relevant columns
+# Select variables of interest (see )
 
 selected_variables <- c(
-  "client_ID", "loan_status", "person_age", "person_income", 
-  "person_home_ownership", "person_emp_length", "loan_intent",  "loan_amnt",
-  "loan_to_income_ratio", "loan_int_rate", "credit_utilization_ratio"
+  "client_ID", "loan_status", "person_age", "person_income",
+  "person_home_ownership", "person_emp_length", "loan_intent", "loan_amnt",
+  "loan_status", "cb_person_default_on_file", "city", "loan_to_income_ratio",
+  "other_debt", "debt_to_income_ratio", "credit_utilization_ratio", 
+  "loan_int_rate"
 )
-
-# excluding "loan_grade" because it is not independent
 
 dataset <- dataset |> select(all_of(selected_variables)) |> data.frame()
 
@@ -45,9 +56,10 @@ dataset <- dataset |>
   )
 
 # Impute missing
-
 dataset <- dataset |>
-  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.),
+    median(., na.rm = TRUE), .
+  )))
 
 # Split into train and test
 set.seed(123)
@@ -64,78 +76,33 @@ glimpse(output)
 ```
 
 ```{r save-encoded}
-
 readr::write_csv(output, "prepared_dataset.csv")
-
 ```
-
-
-# Encode Factors
-
-```{r encode-factors}
-
-library(dplyr)
-library(caret)
-
-# Save client_IDs
-client_IDs <- dataset$client_ID
-
-# Remove client_IDs from dataset
-dataset <- dataset |> select(-client_ID)
-
-# Convert to factors
-
-dataset <- dataset |>
-  mutate(across(where(is.character), as.factor)) |> data.frame()
-
-# Encode factors
-encoded_dataset <- model.matrix(~ . - 1, data = dataset |>
-  select(where(is.factor))) |> as.data.frame()
-
-dataset <- cbind(dataset, encoded_dataset)
-
-dataset <- dataset |> select(-where(is.factor))
-
-# Correct column names
-colnames(dataset) <- make.names(colnames(dataset))
-
-# Add back client_IDs
-dataset <- cbind(client_ID = client_IDs, dataset)
-
-output <- dataset
-
-glimpse(output)
-```
-
-```{r save-encoded}
-
-readr::write_csv(output, "encoded_dataset.csv")
-
-```
-
 
 ## Marginal Effects from GLM
 
 ```{r load-dataset}
-# Delete the next line before copying to Power Query
 dataset <- read.csv("prepared_dataset.csv")
 ```
 
 
 ```{r glm-model}
-
 library(dplyr)
 library(caret)
 
+# Select variables for GLM (see 01_eda.qmd)
+
 continuous_variables <- c(
-  "person_age", "person_income", "person_emp_length", "loan_amnt",
-  "loan_to_income_ratio"
+  "person_emp_length", "loan_amnt", "loan_to_income_ratio"
 )
 factor_columns <- c(
-  "person_home_ownership", "loan_intent"
+  "person_home_ownership", "loan_intent", "cb_person_default_on_file"
 )
 
-train <- dataset |> select(c("loan_status", all_of(continuous_variables), all_of(factor_columns)))
+train <- dataset |> select(c(
+  "loan_status", all_of(continuous_variables),
+  all_of(factor_columns)
+))
 
 train <- train |> mutate(across(where(is.character), as.factor)) |> data.frame()
 
@@ -224,14 +191,12 @@ output
 ```
 
 ```{r}
-
 summary(glm_model)
 ```
 
 ## Cross-Validation for GLM
 
-```{r load-dataset}
-
+```{r load-dataset-2}
 dataset <- read.csv("prepared_dataset.csv")
 ```
 
@@ -246,8 +211,8 @@ dataset <- dataset |>
   )
 
 selected_variables <- c(
-  "loan_status", "person_age", "person_income", "person_emp_length", "loan_amnt",
-  "loan_to_income_ratio", "person_home_ownership", "loan_intent"
+  "loan_status", "person_emp_length", "loan_amnt", "loan_to_income_ratio",
+  "person_home_ownership", "loan_intent", "cb_person_default_on_file"
 )
 
 train <- dataset |>
@@ -276,16 +241,3 @@ output <- data.frame(Value = conf_matrix$byClass) |>
 output
 ```
 
-```{r glm-roc-curve}
-
-library(pROC)
-library(PRROC)
-
-# ROC curve
-roc_glm <- roc(response = test$loan_status, predictor = glm_probs)
-
-plot(roc_glm, col = "blue", main = "ROC Curve - Logistic Regression")
-
-auc(roc_glm)
-
-```
