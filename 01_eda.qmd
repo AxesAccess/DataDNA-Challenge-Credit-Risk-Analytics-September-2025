@@ -9,23 +9,13 @@ format:
     toc: true
     toc-depth: 2
     toc-location: left
-    # theme: cosmo
-    # code-fold: true
-    code-summary: "Click to show/hide code"
     highlight-style: tango
-
-  # pdf:
-  #   papersize: letter
-  #   margin-left: 1.5cm
-  #   margin-right: 1.5cm
-  #   margin-top: 1.5cm
-  #   margin-bottom: 2.5cm
-  #   colorlinks: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 knitr::opts_chunk$set(dpi = 300, fig.width = 8)
+
 library(tidyverse)
 library(janitor)
 library(skimr)
@@ -96,11 +86,13 @@ There are three pairs of highly correlated variables. Let's check them
 and drop redundant ones.
 
 ```{r}
-cor(dataset$loan_percent_income, dataset$loan_to_income_ratio, use = "pairwise.complete.obs")
+cor(dataset$loan_percent_income, dataset$loan_to_income_ratio,
+    use = "pairwise.complete.obs")
 ```
 
 ```{r}
-cor(dataset$person_age, dataset$cb_person_cred_hist_length, use = "pairwise.complete.obs")
+cor(dataset$person_age, dataset$cb_person_cred_hist_length,
+    use = "pairwise.complete.obs")
 ```
 
 ```{r}
@@ -135,21 +127,25 @@ missing values using median.
 
 ```{r impute_missing}
 dataset <- dataset |>
-  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.),
+    median(., na.rm = TRUE), .
+  )))
 ```
 
 ## Outliers
 
 ```{r fig-outliers}
-# | fig-height: 6
-# | fig-width: 6
+#| fig-height: 6
+#| fig-width: 6
 
 dataset |>
   select(where(is.numeric)) |>
   pivot_longer(everything()) |>
   ggplot(aes(x = name, y = log(value))) +
-  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
-  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+  geom_boxplot(fill = "steelblue", 
+               outlier.color = "red", outlier.size = 1) +
+  theme(axis.title = element_blank(), 
+        axis.text.x = element_text(angle = 45, hjust = 1))
 
 ```
 
@@ -166,24 +162,39 @@ plot1 <- dataset |>
   select(person_age, person_emp_length) |>
   pivot_longer(everything()) |>
   ggplot(aes(x = name, y = value)) +
-  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
-  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+  geom_boxplot(
+    fill = "steelblue",
+    outlier.color = "red", outlier.size = 1
+  ) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
-plot2 <-  dataset |>
+plot2 <- dataset |>
   select(where(is.numeric)) |>
   select(other_debt, person_income) |>
   pivot_longer(everything()) |>
   ggplot(aes(x = name, y = log10(value))) +
-  geom_boxplot(fill = "steelblue", outlier.color = "red", outlier.size = 1) +
-  scale_y_continuous(labels = trans_format(function(x) round(10^x, -1), label_number_auto())) +
-  theme(axis.title = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+  geom_boxplot(
+    fill = "steelblue",
+    outlier.color = "red", outlier.size = 1
+  ) +
+  scale_y_continuous(labels = trans_format(
+    function(x) round(10^x, -1),
+    label_number_auto()
+  )) +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
-grid.arrange(plot1, plot2, ncol=2)
+grid.arrange(plot1, plot2, ncol = 2)
 
 ```
 
 Let's correct `person_age` and `person_emp_length` by replacing outliers
-with median. Other utliers seem to be valid values. We're not going to
+with median. Other щutliers seem to be valid values. We're not going to
 remove them.
 
 ```{r correct_outliers}
@@ -200,10 +211,24 @@ dataset <- dataset |>
   )
 ```
 
+Let's save the cleaned dataset for modelling.
+
+```{r save_cleaned}
+write_csv(dataset, "data_cleaned.csv")
+```
+
 ## Selecting Predictors
 
 We're going to build a logistic regression fit to predict loan default
-(`loan_status` variable). 0 means no default, 1 means default.
+(`loan_status` variable). `0` means no default, `1` means default.
+
+We should exclude `loan_grade` variable as it is not independent. Also
+`loan_int_rate` is likely to be set based on bank assumptions about
+client, so we should exclude it as well.
+
+```{r select_predictors}
+dataset <- dataset |> select(-c("loan_grade", "loan_int_rate"))
+```
 
 Let's convert categorical variables to factors.
 
@@ -215,7 +240,10 @@ dataset <- dataset |>
 ```{r linear-fit}
 dataset <- dataset |> mutate(loan_status = (loan_status == 1))
 
-fit <- glm(loan_status ~ ., family = binomial(link = "logit"), x = TRUE, data = dataset |> select(-city, -state))
+fit <- glm(loan_status ~ .,
+  family = binomial(link = "logit"),
+  x = TRUE, data = dataset |> select(-city, -state)
+)
 summary(fit)
 ```
 
@@ -276,10 +304,11 @@ data_encoded |> glimpse()
 ```
 
 ```{r encoded-fit}
-fit_encoded <- glm(loan_status ~ ., family = binomial(link = "logit"), x = TRUE, data = data_encoded)
-
+fit_encoded <- glm(loan_status ~ .,
+  family = binomial(link = "logit"),
+  x = TRUE, data = data_encoded
+)
 summary(fit_encoded)
-
 ```
 
 ## Encoded Model Diagnostics
@@ -315,6 +344,9 @@ optimal_variables <- names(coef(step_fit))[-1]
 optimal_variables
 ```
 
+As soon as factor variables were encoded into multiple columns, we need
+to make sure that all of them are included in the final model.
+
 ```{r}
 final_variables <- c("loan_status")
 
@@ -327,13 +359,19 @@ for (var in optimal_variables) {
 }
 ```
 
+Add back encoded categorical variables.
+
 ```{r}
-final_variables |> c(final_variables, "person_home_ownership", "loan_intent", "loan_grade")
+final_variables |>
+  c(final_variables, "person_home_ownership", "loan_intent", "cb_person_default_on_file")
 ```
 
 ```{r optimal-fit}
 data_optimal <- data_encoded |> select(all_of(c("loan_status", final_variables)))
-fit_optimal <- glm(loan_status ~ ., family = binomial(link = "logit"), x = TRUE, data = data_optimal)
+fit_optimal <- glm(loan_status ~ .,
+  family = binomial(link = "logit"),
+  x = TRUE, data = data_optimal
+)
 summary(fit_optimal)
 ```
 
@@ -351,14 +389,16 @@ r2(fit_optimal)
 
 ```{r selected-variables}
 selected_variables <- c(
-  "loan_status", "person_age", "person_income", "person_home_ownership",
-  "person_emp_length", "loan_intent", "loan_grade", "loan_amnt", 'loan_int_rate',
-  "loan_to_income_ratio", "cityMontreal", 'cityVancouver'
+  "loan_status", "person_home_ownership", "person_emp_length", "loan_intent", 
+  "loan_amnt", "loan_to_income_ratio", "cb_person_default_on_file"
 )
 
 data_selected <- data_encoded |> select(all_of(selected_variables))
 
-fit_selected <- glm(loan_status ~ ., family = binomial(link = "logit"), x = TRUE, data = data_selected)
+fit_selected <- glm(loan_status ~ .,
+  family = binomial(link = "logit"),
+  x = TRUE, data = data_selected
+)
 summary(fit_selected)
 
 ```
@@ -383,9 +423,17 @@ library(pROC)    # for AUC
 set.seed(123)
 
 
-data_encoded <- data_encoded |> mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |> as.factor())
-data_optimal <- data_optimal |> mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |> as.factor())
-data_selected <- data_selected |> mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |> as.factor())
+data_encoded <- data_encoded |>
+  mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |>
+    as.factor())
+
+data_optimal <- data_optimal |>
+  mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |>
+    as.factor())
+
+data_selected <- data_selected |>
+  mutate(loan_status = ifelse(loan_status == TRUE, "Yes", "No") |>
+    as.factor())
 
 colnames(data_encoded) <- make.names(colnames(data_encoded), unique = TRUE)
 colnames(data_optimal) <- make.names(colnames(data_optimal), unique = TRUE)
@@ -410,7 +458,7 @@ cv_full <- train(
   trControl = ctrl
 )
 
-# Train stepAIC model (use the reduced dataset or formula from stepAIC)
+# Train stepAIC model (use the reduced dataset)
 cv_step <- train(
   loan_status ~ ., 
   data = data_optimal,
@@ -442,7 +490,6 @@ is more interpretable.
 
 ## Save Processed Data
 
-```{r save-data, eval=FALSE}
-write_csv(data_selected, "credit_risk_interim.csv")
-saveRDS(fit_selected, "credit_risk_model.rds")
+```{r save-data}
+write_csv(data_selected, "data_selected.csv")
 ```
