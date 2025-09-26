@@ -1,5 +1,5 @@
 ---
-title: "Modelling"
+title: "Modelling Credit Risk"
 author: "Aleksei Prishchepo"
 date: "2025-09-17"
 fig-format: svg
@@ -10,14 +10,6 @@ format:
     toc-depth: 2
     toc-location: left
     highlight-style: tango
-
-  # pdf:
-  #   papersize: letter
-  #   margin-left: 1.5cm
-  #   margin-right: 1.5cm
-  #   margin-top: 1.5cm
-  #   margin-bottom: 2.5cm
-  #   colorlinks: true
 ---
 
 ```{r setup, include=FALSE}
@@ -34,20 +26,22 @@ library(janitor)
 
 ```
 
+## Load Data
 
 Let's load saved data.
 
 ```{r load-data}
-
-dataset <- read_csv("credit_risk_interim.csv")
-
+dataset <- read.csv("data_selected.csv", row.names=NULL)
 dataset <- dataset |> 
   mutate(across(where(is.character), as.factor))
 glimpse(dataset)
 ```
 
+## Preprocess Data
+
+We will split data into train and test sets.
+
 ```{r preprocess-data}
-# Train-test split
 set.seed(123)
 train_index <- createDataPartition(dataset$loan_status, p = 0.7, list = FALSE)
 train <- dataset[train_index, ]
@@ -57,7 +51,6 @@ test  <- dataset[-train_index, ]
 ## Logistic Regression
 
 We're going to use selected at the previous step variables.
-
 
 ```{r logistic-regression}
 glm_model <- glm(loan_status ~ .,
@@ -86,13 +79,40 @@ plot(roc_glm, col = "blue", main = "ROC Curve - Logistic Regression")
 auc(roc_glm)
 
 ```
+
 ## Random Forest
+
+The next model we'll try is Random Forest. It is not interpretable
+except for variable importance, but often performs better than logistic
+regression.
+
+We will use full set of variables here since Random Forest can handle
+correlated features well.
+
+```{r load-full-data}
+dataset <- read.csv("data_cleaned.csv", row.names=NULL)
+
+# Remove not independent variables
+dataset <- dataset |> select(-c(loan_int_rate, loan_grade))
+
+dataset <- dataset |> 
+  mutate(across(where(is.character), as.factor))
+dataset <- dataset |> mutate(loan_status = ifelse(loan_status == 0, "No", "Yes"))
+dataset <- dataset |> mutate(loan_status = factor(loan_status, levels = c("No","Yes")))
+glimpse(dataset)
+
+set.seed(123)
+
+train_index <- createDataPartition(dataset$loan_status, p = 0.7, list = FALSE)
+train <- dataset[train_index, ]
+test  <- dataset[-train_index, ]
+```
 
 ```{r random-forest}
 set.seed(123)
 rf_model <- randomForest(
-  loan_status ~ .,
-  data = train, ntree = 500, mtry = 4, importance = TRUE
+  train |> select(-loan_status), train$loan_status,
+  data = train, ntree = 100, importance = TRUE
 )
 
 # Predictions
@@ -100,12 +120,13 @@ rf_probs <- predict(rf_model, newdata = test, type = "prob")[, 2]
 rf_pred <- predict(rf_model, newdata = test)
 ```
 
-# Confusion matrix
+### Confusion matrix
 
 ```{r rf-evaluation}
 confusionMatrix(rf_pred, test$loan_status)
 ```
-# ROC curve
+
+### ROC curve
 
 ```{r rf-roc-curve}
 roc_rf <- roc(test$loan_status, rf_probs, levels = c("No", "Yes"))
@@ -122,7 +143,56 @@ auc(roc_rf)
 varImpPlot(rf_model)
 ```
 
+```{r rf-variable-importance-vip}
+rf_model$importance 
+```
+
+To simplify the model we can use only the most important variables. Both
+metrics (Mean Decrease Accuracy and Mean Decrease Gini) show that the
+least important variables are `gender`, `marital_status`,
+`education_level`, `cb_person_cred_hist_length`, `country`,
+`credit_utilization_ratio`, `employment_type`, `loan_term_months`,
+`open_accounts`, and `past_delinquencies`. The `state` is shadowed by
+`city` so we can drop it as well.
+
+Let's drop them, retrain the model, and see if the performance changes.
+
+```{r random-forest-simplified}
+set.seed(123)
+
+train <- train |> select(-c(
+  gender, marital_status, education_level, cb_person_cred_hist_length,
+  country, credit_utilization_ratio, employment_type, loan_term_months,
+  open_accounts, past_delinquencies, state
+))
+test <- test |> select(-c(
+  gender, marital_status, education_level, cb_person_cred_hist_length,
+  country, credit_utilization_ratio, employment_type, loan_term_months,
+  open_accounts, past_delinquencies, state
+))
+rf_model <- randomForest(
+  train |> select(-loan_status), train$loan_status,
+  data = train, ntree = 100, importance = TRUE
+)
+
+# Predictions
+rf_probs <- predict(rf_model, newdata = test, type = "prob")[, 2]
+rf_pred <- predict(rf_model, newdata = test)
+
+# Confusion matrix
+confusionMatrix(rf_pred, test$loan_status)
+# AUC-ROC 
+roc_rf <- roc(test$loan_status, rf_probs, levels = c("No", "Yes"))
+auc(roc_rf)
+```
+
+The model performance remains roughly the same or even improves, so we
+will use the simplified set of variables for the next model as well.
+
 ## XGBoost
+
+The last model we'll try is XGBoost. It often provides the best
+performance but lacks interpretability.
 
 ```{r xgboost}
 # Prepare data
@@ -132,15 +202,12 @@ x_train <- train |>
 x_test <- test |>
   mutate(loan_status = ifelse(loan_status == "Yes", 1, 0))
 
-x_test <- cbind(x_test, model.matrix(~ person_home_ownership - 1, data = x_test))
-x_test <- cbind(x_test, model.matrix(~ loan_intent - 1, data = x_test))
-x_test <- cbind(x_test, model.matrix(~loan_grade - 1, data = x_test))
-x_test <- x_test |> select(-person_home_ownership, -loan_intent, -loan_grade)
+x_test <- cbind(x_test, model.matrix(~ . - 1, data = x_test |> select(where(is.factor)) ))
 
-x_train <- cbind(x_train, model.matrix(~person_home_ownership - 1, data = x_train))
-x_train <- cbind(x_train, model.matrix(~loan_intent - 1, data = x_train))
-x_train <- cbind(x_train, model.matrix(~loan_grade - 1, data = x_train))
-x_train <- x_train |> select(-person_home_ownership, -loan_intent, -loan_grade)
+x_test <- x_test |> select(-where(is.factor))
+
+x_train <- cbind(x_train, model.matrix(~ . - 1, data = x_train |> select(where(is.factor))))
+x_train <- x_train |> select(-where(is.factor))
 
 dtrain <- xgb.DMatrix(
   data = as.matrix(select(x_train, -loan_status)),
@@ -176,11 +243,19 @@ legend("bottomright",
 )
 auc(roc_xgb)
 
+```
+
+```{r xgb-variable-importance-vip}
+
 # Feature importance
 vip(xgb_model, num_features = 15)
 ```
 
-### Precision-Recall Curves
+```{r xgb-variable-importance}
+xgb.importance(model = xgb_model)
+```
+
+## Precision-Recall Curves
 
 ```{r fig-precision-recall-glm}
 # Logistic regression PR curve
